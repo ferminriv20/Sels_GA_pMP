@@ -1,5 +1,5 @@
 import numpy as np
-from Genetic_pMP import evaluar_poblacion, poblacion_inicial_combinaciones, selecciona_torneo, ruleta, cruzamiento_intercambio, mutation_local_search_sample,mutacion_simple,criterio_parada_cv
+from Genetic_pMP import evaluar_poblacion, poblacion_inicial_combinaciones, selecciona_torneo, ruleta, cruzamiento_intercambio,mutacion_simple
 import os
 import pandas as pd
 import openpyxl
@@ -9,18 +9,24 @@ from funtion_pMP import genetic_algorithm_pMP
 
 # Parámetros generales del experimento 
 # Número de réplicas por instancia
-REPLICAS =20
+REPLICAS = 10
 # Parámetros del GA 
-NUM_ITERACIONES = 1  # generaciones
-POP_SIZE = 250      # tamaño de población
-PROB_CRUZAMIENTO = 0.95
-PROB_MUTACION = 0.1
-# Parámetros del criterio de parada por CV
-criterio_parada_cv = True
-SAMPLE_FRAC = 0.37
-FRAC_MEJORES = 0.2
-UMBRAL_CV =  0.0015
-MIN_GENER = 70
+NUM_ITERACIONES = 600 # generaciones
+POP_SIZE = 500   # tamaño de población
+PROB_CRUZAMIENTO = 0.4
+PROB_MUTACION = 0.6
+
+# Parámetros de Parada (Estancamiento)
+MIN_GENER=1090 # Corre al menos 100 gens
+MAX_GEN_SIN_MEJORA=170  # Si no mejora en 170 gens  entonces el algoritmo se detiene
+
+# Parámetros de Reinicio Inteligente
+UMBRAL_CV_REINICIO=0.05
+MAX_ESTANCAMIENTO_REINICIO=40
+FUERZA_PERTURBACION=0.15
+FRECUENCIA_CHEQUEO=20
+
+
 MAXIMIZAR = False  # p-median => minimizar
 
 # Carpeta donde se encuentran  las matrices .npy
@@ -104,7 +110,7 @@ for inst_name, p in test.items():
             p=p,
             num_iteraciones=NUM_ITERACIONES,
             pop_size=POP_SIZE,
-            seleccion=selecciona_torneo,
+            seleccion= selecciona_torneo,
             cruzamiento=cruzamiento_intercambio,
             mutacion=mutacion_simple,
             para_seleccion={},     # se rellenan por defecto dentro de Hybrid_GA_pMP
@@ -112,11 +118,12 @@ for inst_name, p in test.items():
             para_mutacion={},
             prob_cruzamiento=PROB_CRUZAMIENTO,
             prob_mutacion=PROB_MUTACION,
-            usar_criterio_parada_cv=criterio_parada_cv,
-            sample_frac=SAMPLE_FRAC,
-            frac_mejores=FRAC_MEJORES,
-            umbral_cv=UMBRAL_CV,
+            max_estancamiento=MAX_ESTANCAMIENTO_REINICIO,
+            max_gen_sin_mejora=MAX_GEN_SIN_MEJORA,
+            umbral_cv=UMBRAL_CV_REINICIO,
             min_gener=MIN_GENER,
+            frecuencia_chequeo=FRECUENCIA_CHEQUEO,
+            fuerza=FUERZA_PERTURBACION,
             maximizar=MAXIMIZAR,
         )
         # Recopilación de resultados de cada réplica.
