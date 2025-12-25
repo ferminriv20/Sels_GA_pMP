@@ -89,7 +89,7 @@ class AlgoritmoGenetico:
 
             # Verifica el criterio de reinicio poblacional
             if self.criterio_reinicio(self.paso_reinicio, generacion, fitness):
-                self.reinicio_poblacion(self.poblacion, self.ratio_reinicio)
+                self.reinicio_poblacion(self.poblacion, fitness, self.ratio_reinicio)
                 fitness = self.evaluacion(self.poblacion)
                 print(f' ### Reinicio de Población en la generación {generacion}\n')
 
@@ -142,10 +142,29 @@ class AlgoritmoGenetico:
                     descendencia[i] = self.mutacion(individuo)
         
             # Seleccionar individuos para ser reemplazados por la descendencia
+            # for i in range(len(descendencia)):
+            #     indice_reemplazo = np.random.randint(len(self.poblacion))
+            #     self.poblacion[indice_reemplazo] = descendencia[i]
+            
             for i in range(len(descendencia)):
-                indice_reemplazo = np.random.randint(len(self.poblacion))
-                self.poblacion[indice_reemplazo] = descendencia[i]
-      
+                hijo = descendencia[i]
+                # Encontrar el peor individuo en la población actual
+                # 1. Evaluamos al hijo inmediatamente para saber qué tan bueno es
+                # (Nota: self.evaluacion espera un array 2D, por eso los corchetes extra)
+                fit_hijo = self.evaluacion(np.array([hijo]))[0]
+    
+                # 2. Encontramos al PEOR de la población actual
+                if self.maximizar:
+                    idx_peor = np.argmin(fitness) # Si maximizamos, el peor es el mínimo
+                    es_mejor = fit_hijo > fitness[idx_peor]
+                else:
+                    idx_peor = np.argmax(fitness) # Si minimizamos (tu caso), el peor es el máximo
+                    es_mejor = fit_hijo < fitness[idx_peor]
+                # 3. Solo hacemos el cambio si el hijo aporta algo positivo
+                if es_mejor:
+                    self.poblacion[idx_peor] = hijo
+                    fitness[idx_peor] = fit_hijo # ¡IMPORTANTE! Actualizamos el fitness para que no lo volvamos a elegir como el peor
+
             idx_peor = np.argmax(fitness) if not self.maximizar else np.argmin(fitness)
             # Se añade el mejor individuo de la descendencia a la población actual
             self.poblacion[idx_peor] = mejor
