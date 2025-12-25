@@ -225,6 +225,29 @@ def mutacion_simple(individuo: np.ndarray, facilities: int) -> np.ndarray:
     
     return mutado
 
+def mutacion_con_inmigracion(individuo: np.ndarray, facilities: int) -> np.ndarray:
+    """
+    Combina mutación simple con inmigración aleatoria (como el algoritmo de la imagen).
+    """
+    # 5% de probabilidad de 'Cataclismo': Devolver un individuo totalmente nuevo
+    if np.random.rand() < 0.05: 
+        p = individuo.size
+        # Generar individuo aleatorio nuevo
+        nuevo = np.random.choice(facilities, size=p, replace=False)
+        nuevo.sort()
+        return nuevo
+
+    # 95% de probabilidad: Mutación normal (cambiar 1 gen)
+    # (Tu código de mutación simple aquí...)
+    mutado = individuo.copy()
+    p = mutado.size
+    todas = np.arange(facilities)
+    disponibles = np.setdiff1d(todas, mutado, assume_unique=True)
+    pos = np.random.randint(0, p)
+    mutado[pos] = np.random.choice(disponibles)
+    mutado.sort()
+    return mutado
+
 def mutation_local_search(individuo: np.ndarray, cost_matrix : np.ndarray, n : int) -> np.ndarray:
     """
     Mutación por búsqueda local:
@@ -379,52 +402,606 @@ def criterio_parada_cv(frac_mejores: float,umbral_cv: float ,min_gener: int , ma
 
     return criterio_parada
 
+def criterio_parada_estancamiento(max_gen_sin_mejora: int, min_gener: int):
+    """
+    Detiene el algoritmo SOLO si el mejor individuo no mejora 
+    durante 'max_gen_sin_mejora' generaciones consecutivas.
+    """
+    estado = {'mejor_fit': float('inf'), 'contador': 0}
+
+    def criterio(generacion, fitness):
+        if generacion < min_gener:
+            return False
+            
+        mejor_actual = np.min(fitness) # Asumiendo minimización
+        
+        # Si mejora (con pequeña tolerancia por errores de flotante)
+        if mejor_actual < estado['mejor_fit'] - 1e-6:
+            estado['mejor_fit'] = mejor_actual
+            estado['contador'] = 0
+            # print(f"  >> Mejora en gen {generacion}: {mejor_actual}")
+        else:
+            estado['contador'] += 1
+            
+        if estado['contador'] >= max_gen_sin_mejora:
+            print(f"STOP: Estancamiento por {max_gen_sin_mejora} generaciones.")
+            return True
+        return False
+
+    return criterio
 
 
+def criterio_reinicio_inteligente(umbral_cv: float, max_estancamiento: int, frecuencia_chequeo: int):
+    """
+    Ordena reiniciar si:
+    1. La población es demasiado homogénea (CV < umbral)
+       O
+    2. El mejor fitness no ha mejorado en 'max_estancamiento' generaciones.
+    """
+    # Estado mutable para rastrear el estancamiento
+    estado = {
+        'mejor_fit_historico': float('inf'),
+        'contador_estancamiento': 0,
+        'ultimo_reinicio': 0
+    }
 
+    def criterio(paso_ignorado, generacion, fitness):
+        # Evitar chequeos en la misma generación del reinicio
+        if generacion == estado['ultimo_reinicio']:
+            return False
+
+        # 1. ACTUALIZAR ESTADO DE ESTANCAMIENTO (Se hace en cada generación)
+        mejor_actual = np.min(fitness)
+        
+        # Si hay mejora real (tolerancia 1e-6)
+        if mejor_actual < estado['mejor_fit_historico'] - 1e-6:
+            estado['mejor_fit_historico'] = mejor_actual
+            estado['contador_estancamiento'] = 0
+        else:
+            estado['contador_estancamiento'] += 1
+
+        # 2. VERIFICAR CONDICIONES (Solo cada X generaciones para ahorrar tiempo, 
+        #    o inmediatamente si el estancamiento es crítico)
+        
+        # A) Criterio de Estancamiento (Prioridad Alta)
+        if estado['contador_estancamiento'] >= max_estancamiento:
+            print(f"   [ALERTA] Estancamiento por {max_estancamiento} gens. REINICIO FORZADO.")
+            # Reseteamos contadores para dar tiempo a la nueva población
+            estado['contador_estancamiento'] = 0 
+            estado['ultimo_reinicio'] = generacion
+            return True
+
+        # B) Criterio de Diversidad (Solo en chequeos periódicos)
+        if generacion > 0 and generacion % frecuencia_chequeo == 0:
+            media = np.mean(fitness)
+            if abs(media) > 1e-9:
+                cv = np.std(fitness) / media
+                # print(f"   [DEBUG] Gen {generacion}: CV={cv:.4f} | Estancamiento={estado['contador_estancamiento']}")
+                
+                if cv < umbral_cv:
+                    print(f"   [ALERTA] Baja diversidad (CV={cv:.4f}). REINICIO SOLICITADO.")
+                    estado['contador_estancamiento'] = 0 # Reset al reiniciar
+                    estado['ultimo_reinicio'] = generacion
+                    return True
+
+        return False
+
+    return criterio
+
+
+def accion_reinicio(facilities: int, p: int):
+    """
+    Conserva al mejor individuo usando el fitness ya calculado (costo O(N)).
+    Reinicia el resto.
+    """
+    #
+    def accion(poblacion: np.ndarray, fitness: np.ndarray, ratio_ignorado: float):
+        
+        # 1. Encontrar al mejor (¡Sin evaluar! Solo buscando el min en el array existente)
+        # Asumimos minimización. Si fuera maximización usar np.argmax
+        idx_mejor = np.argmin(fitness)
+        
+        # Copiamos al líder para que no se pierda al sobrescribir
+        gen_lider = poblacion[idx_mejor].copy()
+        fit_lider = fitness[idx_mejor] # Solo para el print
+        
+        # 2. Generar nueva población (N-1 individuos)
+        pop_size = len(poblacion)
+        num_nuevos = pop_size - 1
+        
+        # Generar aleatorios
+        genes_nuevos = poblacion_inicial_combinaciones(num_nuevos, facilities, p)
+        
+        # 3. Sobrescribir la población
+        # Colocamos al líder en la posición 0
+        poblacion[0] = gen_lider
+        
+        # Llenamos el resto con sangre nueva
+        # (Usamos slicing seguro por si genes_nuevos trae menos elementos)
+        limit = min(len(genes_nuevos), num_nuevos)
+        poblacion[1 : 1+limit] = genes_nuevos[:limit]
+        
+        print(f"   >>> [REINICIO RÁPIDO] Líder (Fit: {fit_lider:.1f}) salvado. {limit} renovados.")
+
+    return accion
+
+def mutacion_geografica(individuo: np.ndarray, cost_matrix: np.ndarray, num_vecinos_cercanos: int = 100) -> np.ndarray:
+    """
+    Estrategia Inteligente:
+    En lugar de cambiar una instalación por otra totalmente aleatoria (que puede estar
+    al otro lado del mapa), la reemplaza por una instalación geográficamente CERCANA.
     
+    Esto permite refinar la solución sin destruir la estructura de cobertura.
+    """
+    mutado = individuo.copy()
+    n = cost_matrix.shape[0]
+    p = mutado.size
+
+    # 1. Seleccionar aleatoriamente una instalación a eliminar (Gen saliente)
+    idx_eliminar = np.random.randint(0, p)
+    facility_saliente = mutado[idx_eliminar]
+
+    # 2. Buscar candidatos geográficos:
+    # Miramos la fila de la matriz de costos correspondiente a la facility saliente.
+    # Obtenemos los índices de las instalaciones más cercanas (menor costo/distancia).
+    # Tomamos 'num_vecinos_cercanos' candidatos más próximos.
+    # (Argsort devuelve los índices ordenados de menor a mayor distancia)
+    vecinos_cercanos = np.argsort(cost_matrix[facility_saliente])[:num_vecinos_cercanos+p]
+
+    # 3. Filtrar:
+    # Solo nos sirven los que NO están ya en el individuo
+    candidatos_validos = np.setdiff1d(vecinos_cercanos, mutado, assume_unique=True)
+
+    if candidatos_validos.size == 0:
+        # Fallback raro: si todos los cercanos ya están, usar aleatorio global
+        todas = np.arange(n)
+        candidatos_validos = np.setdiff1d(todas, mutado, assume_unique=True)
+
+    # 4. Seleccionar uno de los candidatos cercanos
+    nuevo_gen = np.random.choice(candidatos_validos)
+
+    # 5. Intercambio
+    mutado[idx_eliminar] = nuevo_gen
+    mutado.sort() # Mantener orden
+    
+    return mutado
+
+
+def accion_reinicio_porcentaje(facilities: int, p: int, porcentaje: float ):
+    """
+    Estrategia de Reinicio Parcial:
+    1. Ordena la población por fitness.
+    2. Conserva el 'porcentaje' (15%) de los mejores.
+    3. Reemplaza el resto (85%) con individuos nuevos aleatorios.
+    """
+    def accion(poblacion: np.ndarray, fitness: np.ndarray, ratio_ignorado: float):
+        pop_size = len(poblacion)
+        
+        # Calculamos cuántos sobreviven
+        n_elite = int(pop_size * porcentaje)
+        if n_elite < 1: n_elite = 1 # Seguridad: siempre guardar al menos al mejor
+        
+        n_nuevos = pop_size - n_elite
+        
+        # 1. Identificar a los mejores (índices ordenados de menor a mayor costo)
+        indices_ordenados = np.argsort(fitness)
+        indices_elite = indices_ordenados[:n_elite]
+        
+        # Copiamos sus genes para protegerlos de la sobreescritura
+        elite_genes = poblacion[indices_elite].copy()
+        mejor_fit_actual = fitness[indices_ordenados[0]]
+        
+        # 2. Generar sangre nueva para el resto
+        # Usamos tu generador de combinaciones para evitar duplicados internos
+        nuevos_genes = poblacion_inicial_combinaciones(n_nuevos, facilities, p)
+        
+        # 3. Aplicar el reinicio en la matriz original
+        # A) Ponemos a la élite al principio (posiciones 0 a n_elite-1)
+        poblacion[:n_elite] = elite_genes
+        
+        # B) Rellenamos el resto con los nuevos
+        # Nota: Manejamos el caso donde 'combinaciones' devuelva menos individuos de los pedidos
+        cantidad_real_nuevos = len(nuevos_genes)
+        limite_llenado = min(cantidad_real_nuevos, n_nuevos)
+        
+        poblacion[n_elite : n_elite + limite_llenado] = nuevos_genes[:limite_llenado]
+        
+        print(f"   >>> [REINICIO] Se conservó el {porcentaje*100:.0f}% ({n_elite} indiv). Mejor: {mejor_fit_actual:.1f}. Renovados: {limite_llenado}")
+
+    return accion
+
+def accion_reinicio_perturbacion(facilities: int, p: int, fuerza: float = 0.3):
+    """
+    Reinicio por Hipermutación (Kick):
+    1. Conserva al mejor individuo intacto.
+    2. Al resto de la población la 'sacude' fuertemente:
+       Cambia el 'fuerza' (ej. 30%) de las instalaciones de cada individuo por otras aleatorias.
+    
+    Ventaja: Mantiene la calidad estructural ganada pero rompe el estancamiento.
+    """
+    def accion(poblacion: np.ndarray, fitness: np.ndarray, ratio_ignorado: float):
+        # 1. Identificar y salvar al mejor
+        idx_mejor = np.argmin(fitness)
+        elite = poblacion[idx_mejor].copy()
+        fit_elite = fitness[idx_mejor]
+        
+        pop_size = len(poblacion)
+        # Número de genes a cambiar en cada individuo
+        n_cambios = int(p * fuerza)
+        
+        # Universo de todas las instalaciones
+        all_facilities = np.arange(facilities)
+        
+        # 2. Perturbar a toda la población (menos al mejor temporalmente)
+        for i in range(pop_size):
+            # Trabajamos sobre el individuo in-place
+            ind = poblacion[i]
+            
+            # a) Elegir posiciones al azar para eliminar
+            idxs_borrar = np.random.choice(p, n_cambios, replace=False)
+            
+            # b) Buscar candidatos que NO estén en el individuo actual
+            # (Usamos setdiff1d para exactitud)
+            disponibles = np.setdiff1d(all_facilities, ind, assume_unique=True)
+            
+            # c) Elegir reemplazos
+            # Si hay menos disponibles que cambios (raro), ajustamos
+            n_real = min(len(disponibles), n_cambios)
+            nuevos = np.random.choice(disponibles, n_real, replace=False)
+            
+            # d) Aplicar cambios
+            ind[idxs_borrar[:n_real]] = nuevos
+            ind.sort() # Siempre mantener ordenado
+            
+        # 3. Restaurar al mejor individuo en la posición 0 para no perderlo
+        poblacion[0] = elite
+        
+        print(f"   >>> [REINICIO PERTURBACIÓN] Líder ({fit_elite:.1f}) salvado. Población sacudida un {fuerza*100:.0f}%.")
+
+    return accion
+
+##Adicional
+
+def generar_semilla_greedy_rapida(n: int, p: int, cost_matrix: np.ndarray) -> np.ndarray:
+    """
+    Versión optimizada.
+    Costo computacional: O(p * n). Muy rápido.
+    """
+    solucion = []
+    # Mascara de candidatos disponibles
+    candidatos_mask = np.ones(n, dtype=bool) 
+    
+    # Vector de distancias mínimas actuales (inicia en infinito)
+    # Shape: (n_clientes,)
+    current_min_dists = np.full(n, np.inf)
+
+    for _ in range(p):
+        # Indices de los candidatos disponibles
+        indices_candidatos = np.where(candidatos_mask)[0]
+        
+        # --- VECTORIZACIÓN INTELLIGENTE ---
+        # 1. Tomar las filas de la matriz de costos correspondientes a los candidatos
+        # Shape: (n_candidatos, n_clientes)
+        costos_candidatos = cost_matrix[indices_candidatos]
+        
+        # 2. Calcular hipotéticamente cómo quedarían las distancias si agregamos cada candidato
+        # Comparamos la distancia actual vs la nueva posible.
+        # Broadcasting: (1, n_clientes) vs (n_candidatos, n_clientes)
+        nuevas_distancias = np.minimum(current_min_dists[None, :], costos_candidatos)
+        
+        # 3. Sumar costos para ver cuál es el mejor
+        costos_totales = np.sum(nuevas_distancias, axis=1)
+        
+        # 4. Elegir el mejor
+        idx_relativo_mejor = np.argmin(costos_totales)
+        mejor_candidato = indices_candidatos[idx_relativo_mejor]
+        
+        # 5. Actualizar estado
+        solucion.append(mejor_candidato)
+        candidatos_mask[mejor_candidato] = False
+        current_min_dists = nuevas_distancias[idx_relativo_mejor] # Guardamos las nuevas distancias base
+
+    return np.array(sorted(solucion))
+
+def generar_semilla_greedy_aleatorizada(n: int, p: int, cost_matrix: np.ndarray, alpha: int = 5) -> np.ndarray:
+    """
+    Greedy Aleatorizado (GRASP construction):
+    En lugar de tomar siempre el mejor candidato, elige uno al azar 
+    de los 'alpha' mejores candidatos en cada paso.
+    Esto genera diversidad estructural manteniendo alta calidad.
+    """
+    solucion = []
+    current_min_dists = np.full(n, np.inf)
+    candidatos_mask = np.ones(n, dtype=bool)
+
+    for _ in range(p):
+        indices_candidatos = np.where(candidatos_mask)[0]
+        
+        # Evaluación vectorizada (igual que tu greedy rápido)
+        costos_candidatos = cost_matrix[indices_candidatos]
+        nuevas_distancias = np.minimum(current_min_dists[None, :], costos_candidatos)
+        costos_totales = np.sum(nuevas_distancias, axis=1)
+        
+        # --- LA DIFERENCIA ESTÁ AQUÍ ---
+        # No tomamos el argmin (el mejor absoluto), sino los 'alpha' mejores
+        # Si hay menos candidatos que alpha, tomamos todos
+        limit = min(alpha, len(costos_totales))
+        
+        # Obtenemos índices de los mejores (partition es más rápido que sort total)
+        # argpartition pone los k menores al principio
+        indices_mejores_locales = np.argpartition(costos_totales, limit-1)[:limit]
+        
+        # Elegimos uno al azar de esos mejores
+        eleccion_idx = np.random.choice(indices_mejores_locales)
+        
+        mejor_candidato = indices_candidatos[eleccion_idx]
+        
+        solucion.append(mejor_candidato)
+        candidatos_mask[mejor_candidato] = False
+        current_min_dists = nuevas_distancias[eleccion_idx]
+
+    return np.array(sorted(solucion))
+
+
+def pulido_final_intensivo(individuo: np.ndarray, cost_matrix: np.ndarray, num_vecinos: int = 300):
+    """
+    Aplica una búsqueda local intensiva al final del algoritmo.
+    Intenta intercambiar cada gen del individuo con sus 'num_vecinos' más cercanos.
+    Se repite hasta que no haya mejoras.
+    """
+    mejor_ind = individuo.copy()
+    n = cost_matrix.shape[0]
+    p = mejor_ind.size
+    
+    mejor_costo = evaluar_poblacion(np.array([mejor_ind]), cost_matrix)[0]
+    print(f" >> Iniciando Pulido Final. Costo inicial: {mejor_costo}")
+
+    mejora = True
+    iteracion = 0
+    
+    while mejora:
+        mejora = False
+        iteracion += 1
+        
+        # Iteramos sobre cada instalación que tiene el individuo
+        for i in range(p):
+            facility_actual = mejor_ind[i]
+            
+            # Buscamos candidatos cercanos a esta facility que NO estén en la solución
+            candidatos_raw = np.argsort(cost_matrix[facility_actual])
+            candidatos = []
+            count = 0
+            for cand in candidatos_raw:
+                if cand not in mejor_ind:
+                    candidatos.append(cand)
+                    count += 1
+                if count >= num_vecinos:
+                    break
+            
+            # Probamos intercambiar facility_actual por cada candidato
+            for cand in candidatos:
+                vecino = mejor_ind.copy()
+                vecino[i] = cand
+                # Nota: No ordenamos 'vecino' aquí para ahorrar tiempo, 
+                # pero para evaluar_poblacion no importa el orden si es por índices.
+                
+                costo_vecino = evaluar_poblacion(np.array([vecino]), cost_matrix)[0]
+                
+                if costo_vecino < mejor_costo - 1e-6:
+                    print(f"    [Pulido] Mejora encontrada: {mejor_costo} -> {costo_vecino}")
+                    mejor_costo = costo_vecino
+                    mejor_ind = vecino
+                    mejor_ind.sort() # Mantenemos ordenado
+                    mejora = True
+                    break # Restart loop on improvement (First Improvement strategy)
+            
+            if mejora: break
+            
+    return mejor_ind, mejor_costo
+
+def pulido_final_rapido(individuo: np.ndarray, cost_matrix: np.ndarray, num_vecinos: int = 20):
+    """
+    Búsqueda local restringida geográficamente.
+    Solo revisa los 'num_vecinos' más cercanos a cada instalación.
+    """
+    mejor_ind = individuo.copy()
+    p = mejor_ind.size
+    
+    # Evaluar estado inicial
+    mejor_costo = evaluar_poblacion(np.array([mejor_ind]), cost_matrix)[0]
+    
+    mejora = True
+    while mejora:
+        mejora = False
+        # Para cada instalación que tenemos abierta...
+        for i in range(p):
+            facility_actual = mejor_ind[i]
+            
+            # 1. TRUCO DE VELOCIDAD:
+            # Solo consideramos candidatos que sean "vecinos cercanos" de la instalación actual.
+            # (Ya están pre-ordenados en cost_matrix si usamos argsort, o lo hacemos al vuelo)
+            # Tomamos los K más cercanos.
+            vecinos_cercanos = np.argsort(cost_matrix[facility_actual])
+            
+            candidatos_revisados = 0
+            for cand in vecinos_cercanos:
+                if cand in mejor_ind: continue # Si ya está, saltar
+                
+                # Crear vecino hipotético
+                vecino_propuesto = mejor_ind.copy()
+                vecino_propuesto[i] = cand
+                
+                # Evaluación Delta (Rápida) o Completa
+                # Aquí usamos la completa porque son pocas evaluaciones
+                nuevo_costo = evaluar_poblacion(np.array([vecino_propuesto]), cost_matrix)[0]
+                
+                if nuevo_costo < mejor_costo - 1e-6:
+                    mejor_costo = nuevo_costo
+                    mejor_ind = vecino_propuesto
+                    mejor_ind.sort()
+                    mejora = True
+                    # Estrategia First Improvement: si mejoramos, reiniciamos el bucle principal
+                    break 
+                
+                candidatos_revisados += 1
+                if candidatos_revisados >= num_vecinos:
+                    break # Ya miramos los 20 más cercanos, pasamos a la siguiente facility
+            
+            if mejora: break
+
+    return mejor_ind, mejor_costo
+
+def pulido_VND(individuo: np.ndarray, cost_matrix: np.ndarray):
+    """
+    Mejora: Variable Neighborhood Descent.
+    Alterna entre vecindario k=1 (rápido) y k=2 (lento pero desatasca).
+    """
+    mejor_ind = individuo.copy()
+    n = cost_matrix.shape[0]
+    p = mejor_ind.size
+    mejor_costo = evaluar_poblacion(np.array([mejor_ind]), cost_matrix)[0]
+    
+    print(f" >> Iniciando VND (Costo inicial: {mejor_costo})...")
+    
+    k = 1
+    max_k = 2 # Niveles de vecindad
+    
+    while k <= max_k:
+        mejora = False
+        
+        if k == 1:
+            # --- SWAP 1 (Tu pulido rápido optimizado) ---
+            # Revisa vecinos cercanos
+            for i in range(p):
+                fac_actual = mejor_ind[i]
+                # Solo revisar los 20 más cercanos para velocidad
+                candidatos = np.argsort(cost_matrix[fac_actual])[:20] 
+                
+                for cand in candidatos:
+                    if cand in mejor_ind: continue
+                    
+                    vecino = mejor_ind.copy()
+                    vecino[i] = cand
+                    costo_vecino = evaluar_poblacion(np.array([vecino]), cost_matrix)[0]
+                    
+                    if costo_vecino < mejor_costo - 1e-6:
+                        mejor_costo = costo_vecino
+                        mejor_ind = vecino
+                        mejor_ind.sort()
+                        mejora = True
+                        print(f"   [VND k=1] Mejora: {mejor_costo}")
+                        break
+                if mejora: break
+        
+        elif k == 2:
+            # --- SWAP 2 (Restringido) ---
+            # Intenta intercambiar 2 instalaciones a la vez para salir de óptimo local
+            # Solo hacemos unos intentos aleatorios inteligentes para no tardar años
+            print("   [VND] Intentando movimiento doble (k=2)...")
+            num_intentos = 50 
+            for _ in range(num_intentos):
+                # Elegir 2 al azar para sacar
+                idxs = np.random.choice(p, 2, replace=False)
+                
+                # Elegir 2 cercanos para entrar
+                cand1 = np.argsort(cost_matrix[mejor_ind[idxs[0]]])[1] # El vecino más cercano
+                cand2 = np.argsort(cost_matrix[mejor_ind[idxs[1]]])[1]
+                
+                if cand1 not in mejor_ind and cand2 not in mejor_ind and cand1 != cand2:
+                    vecino = mejor_ind.copy()
+                    vecino[idxs[0]] = cand1
+                    vecino[idxs[1]] = cand2
+                    costo_vecino = evaluar_poblacion(np.array([vecino]), cost_matrix)[0]
+                    
+                    if costo_vecino < mejor_costo - 1e-6:
+                        mejor_costo = costo_vecino
+                        mejor_ind = vecino
+                        mejor_ind.sort()
+                        mejora = True
+                        print(f"   [VND k=2] ¡DESBLOQUEO! Mejora: {mejor_costo}")
+                        break
+
+        if mejora:
+            k = 1 # Si mejoramos, volvemos al vecindario rápido
+        else:
+            k += 1 # Si no, profundizamos
+
+    return mejor_ind, mejor_costo
+
 if __name__ == '__main__':
     #* PARÁMETROS DEL PROBLEMA *#
-    MATRIX = np.load('datasets\pmed1.npy')
+    MATRIX = np.load('datasets\pmed18.npy')
     CLIENTS = len(MATRIX)
     FACILITIES = len(MATRIX)
-    P = 5# Número de medianas a seleccionar 
-    TAM = 500 # Tamaño de la población
+    P = 40# Número de medianas a seleccionar 
+    TAM = 600 # Tamaño de la población
 
-    criterio_parada = criterio_parada_cv(
-    frac_mejores = 0.2,
-    umbral_cv = 1e-4,
-    min_gener = 50,
-    maximizar=False
-)
+    criterio_parada_config= criterio_parada_estancamiento(max_gen_sin_mejora=170, min_gener=100)
+    criterio_reinicio_config = criterio_reinicio_inteligente(umbral_cv=0.05, max_estancamiento=40, frecuencia_chequeo=20)
+    accion_reinicio_config = accion_reinicio_perturbacion(facilities= FACILITIES, p=P, fuerza=0.15)
 
     # POB = poblacion_inicial(TAM*2, FACILITIES, P)
-    POB = poblacion_inicial_combinaciones(TAM*2, FACILITIES, P)
+    # POB = poblacion_inicial_combinaciones(TAM*2, FACILITIES, P)
+    # 1. GENERAR POBLACIÓN HÍBRIDA
+    print("Generando población inicial...")
+    # A) El 99% es aleatorio (usando tu método de combinaciones o random)
+    POB = poblacion_inicial_combinaciones(TAM, FACILITIES, P)
+    # Inyectar el 10% de la población con semillas GRASP
+    num_semillas = int(TAM * 0.10) 
+    print(f" >> Inyectando {num_semillas} semillas GRASP variadas...")
+    
+    for i in range(num_semillas):
+        # alpha=5 significa que elegimos entre los 5 mejores en cada paso
+        # Variamos alpha ligeramente para más caos
+        POB[i] = generar_semilla_greedy_aleatorizada(FACILITIES, P, MATRIX, alpha=np.random.randint(3, 8))
+    # B) Inyectamos la Semilla Greedy (El "Súper Individuo")
+    #Esto le da al GA una pista muy fuerte de dónde buscar.
+    # semilla = generar_semilla_greedy_rapida(FACILITIES, P, MATRIX)
+    # POB[0] = semilla # Reemplazamos al primero con la semilla
 
-
-    print(
-        'El tiempo de ejecución fue: ',
-        AlgoritmoGenetico(
-            num_iteraciones= 500,
+    # print(
+    #     'El tiempo de ejecución fue: ',
+        
+    print("Ejecutando GA...")
+    resultado_ga = AlgoritmoGenetico(
+            num_iteraciones= 600,
             tam= TAM,
             poblacion_inicial= POB,
             evaluacion= evaluar_poblacion,
-            seleccion= ruleta,
+            seleccion= selecciona_torneo,
             cruzamiento = cruzamiento_intercambio,
-            mutacion=  mutacion_simple,
-            mutacion_elite=  mutation_local_search_sample,
-            prob_mutacion= 0.6,
-            prob_cruzamiento= 0.4,
+            mutacion=  mutacion_geografica,
+            mutacion_elite=  mutation_local_search,
+            prob_mutacion= 0.4,
+            prob_cruzamiento= 0.6,
             para_evaluacion= {'cost_matrix': MATRIX},
-            # para_seleccion= {'num_competidores': 12}, #torneo
-            para_seleccion= {}, #ruleta
+            para_seleccion= {'num_competidores': 8}, #torneo
+            # para_seleccion= {}, #ruleta
             para_cruzamiento= {'facilities': FACILITIES },
-            para_mutacion= {'facilities': FACILITIES }, #mutación simple
-            para_mutacion_elite= {'n': FACILITIES,'cost_matrix': MATRIX, 'sample_frac': 0.37  }, #mutación por búsqueda local
-            criterio_parada= criterio_parada,
+            # para_mutacion= {'facilities': FACILITIES }, #mutación simple              
+            para_mutacion= {'cost_matrix': MATRIX, 'num_vecinos_cercanos': 20 }, #mutación geográfica
+            para_mutacion_elite= {'cost_matrix': MATRIX,'n': FACILITIES }, #mutación por búsqueda local
+            criterio_parada= criterio_parada_config,
+            criterio_reinicio= criterio_reinicio_config,
+            reinicio_poblacion= accion_reinicio_config,
+            ratio_reinicio= 0.0,
+            paso_reinicio= 0.0,
             maximizar= False
-            ).run()['tiempo'],
-            'minutos.')
+            ).run()
+    mejor_individuo_ga = resultado_ga['mejor']
+    mejor_fitness_ga = resultado_ga['resultado']
+    tiempo_ga = resultado_ga['tiempo']
+
+    # 3. PULIDO FINAL (POST-OPTIMIZACIÓN)
+    # Aquí es donde cierras el GAP final
+    mejor_individuo_final, mejor_fitness_final = pulido_VND(mejor_individuo_ga, MATRIX)
+
+    print("\n" + "="*50)
+    print(f"RESULTADO FINAL:")
+    print(f"GA Fitness: {mejor_fitness_ga}")
+    print(f"Fitness tras Pulido: {mejor_fitness_final}")
+    print(f"Tiempo GA: {tiempo_ga} min")
+    print("="*50)
 
 
 
